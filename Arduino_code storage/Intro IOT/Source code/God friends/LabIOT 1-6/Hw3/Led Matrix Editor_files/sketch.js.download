@@ -1,0 +1,1184 @@
+/* eslint-disable no-undef */
+// created by ubi de feo
+// 
+// original idea from http://ubidefeo.com/fotogrammatrice
+// 
+// Creative Technologist since 1997
+// http://ubidefeo.com
+// https://github.com/ubidefeo
+
+const appState = {
+  IDLE: "idle",
+  DRAWING: "drawing",
+  ERASING: "erasing",
+  SELECTING: "selecting",
+  PLAYING: "playing"
+}
+let currentState = appState.IDLE;
+let stateBeforePlayback = currentState;
+
+let actionEnabled = false;
+
+const directions = {
+  RIGHT: "right",
+  LEFT: "left",
+  UP: "up",
+  DOWN: "down"
+}
+
+var defaultFramesetName = "animation";
+var defaultBitmapName = "bitmap";
+
+var columns = 12;
+var rows = 8;
+var cellSize = 40;
+var cellOffset = 1;
+
+var gridArea = { _x: 0, _y: 0, _width: 0, _height: 0 };
+
+var toolBarPosition;
+var toolButtonSize = 40;
+var toolBarSpacerSize = 12;
+
+const BUTTON_WIDTH = 42;
+const BUTTON_HEIGHT = 42;
+const BUTTON_SPACING = 8;
+const COLOR_OFF = 0x000000;
+
+
+var currentFrame = 0;
+let playbackInterval;
+var loopAnimation = false;
+
+const DEFAULT_FRAME_DURATION = 66;
+var currentFrameDuration = DEFAULT_FRAME_DURATION;
+
+var frameBuffer = new Array(rows);
+var frames = new Array();
+var previewID = 0;
+var previewsList = new Array();
+// previewsList.push(`frame-preview-${previewID}`)
+var selectedFrames = new Array();
+var currentFrameSelectionState = false;
+
+var baseFrame;
+let selectedCells;
+
+let uint32Buffer = new Uint32Array(3);
+
+var hoverCell;
+var lastHoverCell;
+let paintbrushIcon;
+let eraserIcon;
+let pointerIcon;
+let exportIcon;
+var selectedTool;
+
+
+let tools = {
+  POINTER: {
+    name: 'pointer',
+    id: 0,
+    obj: pointerIcon,
+    offsetX: 0,
+    offsetY: 0
+  },
+  PAINTBRUSH: {
+    name: 'paintbrush',
+    id: 1,
+    obj: paintbrushIcon,
+    offsetX: -1,
+    offsetY: -28
+  },
+  ERASER: {
+    name: 'eraser',
+    id: 2,
+    obj: eraserIcon,
+    offsetX: -2,
+    offsetY: -25
+  },
+  DOWNLOAD: {
+    name: 'download',
+    id: 2,
+    obj: exportIcon,
+    offsetX: -2,
+    offsetY: -25
+  }
+};
+
+/*
+  UNDO will be implemented
+*/
+var undo = [];
+var undoLevels = 3;
+
+/* UI */
+var drawButton;
+var eraseButton;
+var pointerButton;
+var exportButton;
+var serialLinkButton;
+
+var frameDurationInput;
+
+var displayHelp = false;
+
+var buttonsStyle = {
+  unselected: {
+    border: "#888888",
+    background: "#aaaaaa",
+    icon: "#eeeeee55"
+  },
+  selected: {
+    border: "#ffffff",
+    background: "#fdbbdf",
+    icon: "#aaaaaa"
+  }
+};
+
+
+function setup() {
+
+  /*
+    Create frame duration text input field.
+    This will be replaced by something else,
+    but KEEP IN MIND it is used to get the
+    values to associate to a frame
+  */
+  // frameDurationInput = document.createElement("INPUT");
+  // frameDurationInput.setAttribute("type", "number");
+  // document.getElementById("frames-container").appendChild(frameDurationInput)
+  // frameDurationInput = document.getElementById("frame-duration")
+  // frameDurationInput.addEventListener('input', (event) => {
+  //   changeFrameDuration(event.target.value, 0);
+  // });
+  // document.body.appendChild(frameDurationInput);
+
+  /*  Create the editor canvas  */
+  // createCanvas(cellOffset + columns * (cellSize + cellOffset), 2 * cellOffset + rows * (cellSize + cellOffset) + toolButtonSize + toolBarSpacerSize);
+  const width = cellOffset + columns * (cellSize + cellOffset);
+  const height =  cellOffset + rows * (cellSize + cellOffset);
+  currentFrameDuration = DEFAULT_FRAME_DURATION;
+  newFramePreview(true);
+  createCanvas(width, height);
+  createMatrix(rows, columns);
+  
+  selectedCells = {matrix: Array.from(Array(rows), () => new Array(columns).fill(0))};
+  
+  gridArea._x = cellOffset;
+  gridArea._y = cellOffset;
+  gridArea._width = (cellSize + cellOffset) * columns - cellOffset;
+  gridArea._height = (cellSize + cellOffset) * rows - cellOffset;
+
+  for (const item in tools) {
+    tools[item].obj = loadImage("UIassets/" + tools[item].name + ".png");
+  }
+  toolBarPosition = createVector(cellOffset, rows * (cellSize + cellOffset) + BUTTON_SPACING);
+
+  drawButton = new UIButton(0, 0, BUTTON_WIDTH, BUTTON_HEIGHT, 'UIassets/paintbrush.png', buttonsStyle, false);
+  eraseButton = new UIButton(drawButton.x + drawButton.width + BUTTON_SPACING, 0, BUTTON_WIDTH, BUTTON_HEIGHT, 'UIassets/eraser.png', buttonsStyle, false);
+  pointerButton = new UIButton(eraseButton.x + eraseButton.width + BUTTON_SPACING, 0, BUTTON_WIDTH, BUTTON_HEIGHT, 'UIassets/pointer.png', buttonsStyle, false);
+  exportButton = new UIButton(pointerButton.x + pointerButton.width + BUTTON_SPACING, 0, BUTTON_WIDTH, BUTTON_HEIGHT, 'UIassets/download.png', buttonsStyle, false);
+  serialLinkButton = new UIButton(exportButton.x + exportButton.width + BUTTON_SPACING, 0, BUTTON_WIDTH, BUTTON_HEIGHT, 'UIassets/link_off.png', buttonsStyle, false);
+
+  /*  Editor will start in DRAWING mode */
+  
+  changeState(appState.DRAWING);
+
+  const livePreviewSupported = Boolean(navigator.serial);
+  if (!livePreviewSupported) {
+    const livePreviewBtn = document.getElementById('live-preview-btn')
+    livePreviewBtn.setAttribute('disabled', true);
+  } 
+
+}
+
+function draw() {
+  background('#C9D2D2');
+  renderMatrix();
+  // renderToolbar();
+  // renderFrameInfo();
+  mouseAction();
+  renderCursor();
+  
+  if(isDev){
+    if(currentState == appState.SELECTING){
+      push();
+      // translate(cellOffset, height - 20);
+      fill('#ff00ff');
+      textSize(24);
+      textAlign(LEFT, BASELINE);
+      text("broken feature", cellOffset, height - cellOffset * 2)
+    }
+  }
+  // if(isDev && displayHelp){
+  //   renderHelp();
+  // }
+}
+
+function createMatrix(_rows, _cols) {
+  var index = 0;
+  var coords = { "col": 0, "row": 0 };
+  for (r = 0; r < _rows; r++) {
+    frameBuffer[r] = new Array(columns);
+    for (c = 0; c < _cols; c++) {
+      coords.col = c;
+      coords.row = r;
+      newCell = new Cell(index, index, COLOR_OFF, coords);
+      frameBuffer[r][c] = newCell;
+    }
+  }
+  commitFrame(currentFrame);
+}
+
+function renderMatrix() {
+  for (r = 0; r < rows; r++) {
+    for (c = 0; c < columns; c++) {
+      let cell = frameBuffer[r][c]
+      push();
+      translate(cellOffset, cellOffset)
+      translate(cellSize / 2, cellSize / 2)
+      var positionVector = createVector(cell.col * (cellSize + cellOffset), cell.row * (cellSize + cellOffset));
+      cell.centerVector = positionVector;
+      translate(positionVector);
+      cell.update();
+      cell.render();
+      pop();
+    }
+  }
+  if(frames[currentFrame].selected){
+    push();
+    translate(toolBarPosition.x, toolBarPosition.y);
+    text("selected", cellOffset, 0);
+    pop();
+  }
+}
+
+function renderToolbar() {
+  push();
+  translate(toolBarPosition.x, toolBarPosition.y);
+  drawButton.draw();
+  eraseButton.draw();
+  pointerButton.draw();
+  exportButton.draw();
+  serialLinkButton.draw();
+  pop();
+}
+
+function renderFrameInfo() {
+  push();
+  textSize(28);
+  frameString = "frame:" + (currentFrame + 1) + "/" + (frames.length);
+  fill(0x55, 0x55, 0x55);
+  textAlign(RIGHT, BASELINE);
+  textSize(24);
+  text(frameString, width - cellOffset, height - cellOffset * 2);
+  pop();
+}
+
+function mouseAction() {
+  if (!(mouseX < width && mouseY < height)) {
+    hoverCell = null;
+    lastHoverCell = hoverCell;
+    return;
+  }
+
+  /*
+    Render action radius.
+    This will not be visible because outside the canvas area,
+    but WILL BE KEPT HERE for future debugging purposes and
+    behaviour enhancements.
+    Might cause merging annoyances if removed from a fork 
+  */
+  
+  for (r = 0; r < rows; r++) {
+    for (c = 0; c < columns; c++) {
+      let cell = frameBuffer[r][c]
+      strokeWeight(1)
+      cV = createVector(cell.centerVector.x + cellOffset + cellSize / 2, cell.centerVector.y + cellOffset + cellSize / 2);
+      mV = createVector(mouseX, mouseY);
+      distance = mV.dist(cV);
+      hoverCell = cell;
+      if (distance < (cellSize / 2)) {
+        // circle(cV.x, cV.y, cellSize - (2 * distance));
+        // line(cV.x, cV.y, mouseX, mouseY)
+        hoverCell = cell;
+        if (actionEnabled) {
+          if (currentState == appState.DRAWING) {
+            (frameBuffer[hoverCell.row][hoverCell.col]).setState(true);
+            commitFrame(currentFrame);
+          }
+          if (currentState == appState.ERASING) {
+            (frameBuffer[hoverCell.row][hoverCell.col]).setState(false);
+            commitFrame(currentFrame);
+          }
+          if (currentState == appState.SELECTING) {
+            let selectionState = (frameBuffer[hoverCell.row][hoverCell.col]).selected;
+            if (hoverCell != lastHoverCell) {
+              var fbCell = frameBuffer[hoverCell.row][hoverCell.col];
+              fbCell.select(!selectionState);
+              selectedCells.matrix[hoverCell.row][hoverCell.col] = (fbCell.selected ? 1 : 0);
+              lastHoverCell = hoverCell;
+            }
+
+          }
+        }
+      }
+    }
+  }
+
+}
+
+function renderCursor() {
+  if (mouseX > gridArea._x && mouseX < gridArea._width && mouseY > gridArea._y && mouseY < gridArea._height) {
+    tint(0xfb, 0x88, 0xbf, 0xff);
+    image(selectedTool.obj, mouseX + selectedTool.offsetX, mouseY + selectedTool.offsetY);
+  }
+}
+
+function renderHelp(){
+  push();
+  fill("#eee");
+  translate(gridArea._x, gridArea._y);
+  rect(0, 0, gridArea._width, height - cellOffset * 2);
+  fill("#000");
+  textAlign(LEFT, TOP);
+  textStyle(BOLD);
+  textSize(16);
+  var textXOffset = 10;
+  var textYOffset = 7;
+  var textYOffsetIncrease = 21;
+  text("d: draw", textXOffset, textYOffset);
+  textYOffset += textYOffsetIncrease;
+  text("e: erase", textXOffset, textYOffset);
+  textYOffset += textYOffsetIncrease;
+  text("v: select (broken. unselect and change mode)", textXOffset, textYOffset);
+  textYOffset += textYOffsetIncrease;
+  text("SH + c: clear frame", textXOffset, textYOffset);
+  textYOffset += textYOffsetIncrease;
+  text("SH + x: delete frame (if more than one)", textXOffset, textYOffset);
+  textYOffset += textYOffsetIncrease;
+  text("SH + ➡️: move right (wraps unless ALT)", textXOffset, textYOffset);
+  textYOffset += textYOffsetIncrease;
+  text("SH + ⬅️: move left (wraps unless ALT)", textXOffset, textYOffset);
+  textYOffset += textYOffsetIncrease;
+  text("SH + ⬆️: move up (wraps unless ALT)", textXOffset, textYOffset);
+  textYOffset += textYOffsetIncrease;
+  text("SH + ⬇️: move down (wraps unless ALT)", textXOffset, textYOffset);
+  textYOffset += textYOffsetIncrease;
+  text("➡️: next frame", textXOffset, textYOffset);
+  textYOffset += textYOffsetIncrease;
+  text("⬅️: previous frame", textXOffset, textYOffset);
+  textYOffset += textYOffsetIncrease;
+  text("SH + n: new frame", textXOffset, textYOffset);
+  textYOffset += textYOffsetIncrease;
+  text("SH + ALT + n: copy current frame to new frame", textXOffset, textYOffset);
+  textYOffset += textYOffsetIncrease;
+  text("SH + b: export single frame as bitmap", textXOffset, textYOffset);
+  textYOffset += textYOffsetIncrease;
+  text("SH + e: export frame set", textXOffset, textYOffset);
+  textYOffset += textYOffsetIncrease;
+  text("SH + w: save project", textXOffset, textYOffset);
+  textYOffset += textYOffsetIncrease;
+  text("SH + l: load project", textXOffset, textYOffset);
+  textYOffset += textYOffsetIncrease;
+  text("SPACE: play animation", textXOffset, textYOffset);
+  textYOffset += textYOffsetIncrease;
+  text("SH + SPACE: loop animation", textXOffset, textYOffset);
+  pop();
+}
+
+function renderThumbnail() {
+  const framePreviewID = previewsList[currentFrame]
+  canvas = document.getElementById(`canvas-${framePreviewID}`);
+  c2d = canvas.getContext('2d');
+  c2d.smoothingEnabled = false;
+  c2d.clearRect(0, 0, c2d.canvas.width, c2d.canvas.height);
+  for (var r = 0; r < rows; r++) {
+      for (var c = 0; c < columns; c++){
+          c2d.beginPath();
+          c2d.rect( c * 8, r * 8 , 8, 8);
+          let pixelColor = '#ECF1F1'
+          if(frames.length > 0){
+            pixelColor = frames[currentFrame].matrix[r][c] === 1 ? '#374146' : '#ECF1F1';
+          }
+          c2d.fillStyle = pixelColor
+          c2d.fill();
+          c2d.closePath();
+      }
+  }
+}
+
+function showHelp(){
+  // if(isDev) displayHelp = !displayHelp;
+  displayHelp = !displayHelp;
+  const helper = document.getElementById('helper');
+  const helperButton = document.getElementById('helper-button')
+  const wrapper = document.getElementById('editor-wrapper')
+  if (displayHelp) {
+    helper.setAttribute('class', 'helper-container visible');
+    helperButton.setAttribute('class', 'helper-button selected');
+    wrapper.setAttribute('class', 'editor-wrapper with-helper');
+  } else {
+    helper.setAttribute('class', 'helper-container');
+    helperButton.setAttribute('class', 'helper-button');
+    wrapper.setAttribute('class', 'editor-wrapper');
+  }
+}
+
+function highlightSection(section) {
+  const sections = ['topbar-section', 'editor-container', 'footer']
+  let id;
+  switch (section) {
+    case 'project':
+      id = 'topbar-section';
+      break;
+    case 'canvas':
+      id = 'editor-container';
+      break;
+    case 'timeline':
+      id = 'footer'
+      break;
+    default:
+      break;
+  }
+  const selectedSection = document.getElementById(id);
+
+  sections.forEach((currentSection) => {
+    let classSection = `${id}`
+    if (selectedSection.className !== `${id} highlight`) {
+      classSection = `${id} highlight`
+    }
+
+    if (currentSection === id) {
+      selectedSection.setAttribute('class', classSection)
+    } else {
+      document.getElementById(currentSection).setAttribute('class', `${currentSection}`)
+    }
+  })
+}
+
+function changeState(_newState) {
+
+  if (_newState == appState.SELECTING || _newState == appState.IDLE) {
+    pointerButton.select();
+    drawButton.select(false);
+    eraseButton.select(false);
+    selectedTool = tools.POINTER;
+  }
+  if (_newState == appState.DRAWING) {
+    pointerButton.select(false);
+    drawButton.select();
+    eraseButton.select(false);
+    selectedTool = tools.PAINTBRUSH;
+  }
+  if (_newState == appState.ERASING) {
+    pointerButton.select(false);
+    drawButton.select(false);
+    eraseButton.select();
+    selectedTool = tools.ERASER;
+  }
+  if(_newState == appState.PLAYING){
+    stateBeforePlayback = currentState;
+  }
+  setButtonClass(_newState);
+  currentState = _newState;
+}
+
+function setButtonClass(currentState) {
+  const selectedButton = document.getElementById(currentState);
+  if (!selectedButton) return;
+  const currentClassName = selectedButton.className;
+  selectedButton.setAttribute('class', `${currentClassName} selected`);
+  Object.values(appState).forEach((state) => {
+    if (state !== currentState) {
+      document.getElementById(state)?.setAttribute('class', 'toolbar-button');
+    }
+  })
+}
+
+function deleteFrame(_frameNumber = currentFrame) {
+  if (frames.length <= 1) {
+    console.log("cannot delete only frame");
+    console.log("action will trigger clearFrame()");
+    clearFrame();
+    return;
+  }
+  frames.splice(_frameNumber, 1);
+  currentFrame = _frameNumber < frames.length ? _frameNumber : _frameNumber - 1;
+  
+  deleteThumbnail();
+  renderThumbnail();
+  goToFrame(currentFrame);
+}
+
+function deleteAllFrames() {
+  frames.forEach(() => deleteFrame())
+  clearFrame()
+}
+
+function deleteThumbnail(_frameNumber = currentFrame){
+  const targetFrameID = previewsList[currentFrame]
+  document.getElementById(targetFrameID).parentElement.remove()
+  disableButtons();
+  previewsList.splice(_frameNumber, 1);
+}
+
+function clearFrame() {
+  for (r = 0; r < rows; r++) {
+    for (c = 0; c < columns; c++) {
+      let cell = frameBuffer[r][c];
+      if (currentState == appState.SELECTING) {
+        let selectedCell = selectedCells.matrix[r][c]
+        if (selectedCell == 1) {
+          selectedCells.matrix[r][c] = 0;
+          cell.setState(false);
+        }
+      } else {
+        cell.setState(false);
+      }
+
+    }
+  }
+  commitFrame(currentFrame);
+}
+
+
+function newFrame(_frameToClone = null) {
+  let newFrame = _frameToClone
+  if (newFrame == null) {
+    newFrame = { duration: DEFAULT_FRAME_DURATION, matrix: Array.from(Array(rows), () => new Array(columns).fill(0)), selected: false }
+  }
+  const lastFrame = frames.length - 1;
+  commitFrame(lastFrame);
+  frames.splice(lastFrame + 1, 0, newFrame);
+  fillFrameBuffer(newFrame);
+  currentFrame = lastFrame + 1;
+
+  newFramePreview();
+
+  goToFrame(currentFrame);
+  toggleFrameSelection(currentFrame, false);
+  disableButtons();
+}
+
+function toggleFrameSelection(_frameNumber = currentFrame, _newState = null){
+  var newState = (_newState != null) ? _newState : !frames[_frameNumber].selected
+
+  frames[_frameNumber].selected = newState;
+}
+
+function createFramesPreviews(){
+  
+  framePreviewID = 0;
+  for(frame in frames){
+    newFramePreview();
+    currentFrame++;
+  }
+  goToFrame(0);
+  disableButtons();
+}
+
+function newFramePreview(firstFrame = false) {
+  
+  const framePreviewID = `frame-preview-${previewID}`;
+  const framePreviewContainer = document.createElement('div');
+  framePreviewContainer.setAttribute('class', 'frame-preview-container');
+
+  currentFrameDurationInput = document.createElement("INPUT");
+  currentFrameDurationInput.setAttribute("type", "number")
+  currentFrameDurationInput.setAttribute('class', 'frame-duration');
+  currentFrameDurationInput.setAttribute('id', `frame-duration-${framePreviewID}`);
+  let referenceDuration = DEFAULT_FRAME_DURATION;
+  if(!firstFrame){
+    referenceDuration = frames[currentFrame].duration;
+  }
+  currentFrameDurationInput.value = currentFrameDuration = referenceDuration;
+  currentFrameDurationInput.addEventListener('input', (event) => {
+    const splitString = event.target.id.split('-')
+    const id = splitString[splitString.length - 1];
+    changeFrameDuration(event.target.value, id);
+  });
+  
+  
+  const newFramePreview = document.createElement('div');
+  newFramePreview.setAttribute('class', 'frame-preview');
+  newFramePreview.setAttribute('id', framePreviewID);
+  newFramePreview.addEventListener('click', (e) => {
+    const splitString = e.target.id.split('-')
+    const id = splitString[splitString.length - 1];
+    const targetFrame = previewsList.indexOf(`frame-preview-${id}`);
+    goToFrame(targetFrame)
+  });
+
+
+  const canvas = document.createElement('canvas');
+  canvas.setAttribute('width', 96);
+  canvas.setAttribute('height', 64);
+  canvas.setAttribute("id", `canvas-${framePreviewID}`);
+
+  newFramePreview.appendChild(canvas);
+
+  framePreviewContainer.appendChild(newFramePreview);
+  framePreviewContainer.appendChild(currentFrameDurationInput);
+
+  const framesContainer = document.getElementById('frames-container');
+  const addButton = document.getElementById('add-button');
+  framesContainer.insertBefore(framePreviewContainer, addButton);
+  previewsList.push(framePreviewID);
+  renderThumbnail();
+  frameDurationInput = currentFrameDurationInput;
+  previewID++;
+}
+
+function commitFrame(_frameNumber = 0) {
+  var frame = {};
+  frame.matrix = new Array();
+  var frameSelected = false;
+  if(frames[currentFrame] != null){
+    frameSelected = frames[currentFrame].selected;
+  }
+  let binaryString = "";
+  let currentBit = 0;
+  let uint32_index = 0;
+  let frameUpdatable = false;
+  for (let r = 0; r < rows; r++) {
+    frame.matrix[r] = new Array();
+    for (c = 0; c < columns; c++) {
+      let cell = frameBuffer[r][c];
+      frame.matrix[r][c] = cell.state ? 1 : 0;
+      binaryString += cell.state ? 1 : 0;
+      if (((currentBit + 1) % 32) == 0) {
+        const newValue = parseInt(binaryString, 2);
+        if (uint32Buffer[uint32_index] != newValue) {
+          uint32Buffer[uint32_index] = newValue;
+          frameUpdatable = true;
+        }
+        binaryString = "";
+        uint32_index++;
+      }
+      currentBit++;
+    }
+  }
+  if (frameUpdatable) {
+    if (serialPortReady) {
+      writeSerialData();
+    }
+  }
+  frameDurationInput.value = currentFrameDuration;
+  frame.duration = currentFrameDuration;
+  frames[_frameNumber] = frame;
+  frames[_frameNumber].selected = frameSelected;
+  baseFrame = frame;
+  renderThumbnail();
+}
+
+function fillFrameBuffer(_frame = frames[currentFrame]) {
+  for (r = 0; r < rows; r++) {
+    for (c = 0; c < columns; c++) {
+      frameBuffer[r][c].state = _frame.matrix[r][c]
+    }
+  }
+}
+
+/* I DO NOT KNOW WHAT THIS WAS FOR */
+function clearFrameBuffer(_buffer){
+  for (r = 0; r < rows; r++) {
+    for (c = 0; c < columns; c++) {
+      _buffer.matrix[r][c]
+    }
+  }
+}
+
+function changeFrameDuration(_value, frameNumber = currentFrame) {
+  frames[frameNumber].duration = _value;
+}
+
+
+/*  
+  CONSOLE FRAME PRINT (DEBUG)
+  The following functions are only useful for debug purposes.
+  They print a text block preview of the frames into the console
+*/
+
+function printFrameBuffer() {
+  console.log("frameBuffer                 selected");
+  var printOut = "";
+  for (r = 0; r < rows; r++) {
+    for (c = 0; c < columns; c++) {
+      let cell = frameBuffer[r][c];
+      printOut += cell.state ? "🟪" : "⬜️";
+
+    }
+    printOut += " > "
+    for (c = 0; c < columns; c++) {
+      let cell = frameBuffer[r][c];
+      printOut += cell.selected ? "🟨" : "⬜️";
+    }
+    printOut += "\n"
+  }
+  console.log(printOut);
+}
+
+function printSelectedCells() {
+  console.log("print selected cells");
+  var printOut = "";
+  for (r = 0; r < rows; r++) {
+    for (c = 0; c < columns; c++) {
+      let selectedCell = selectedCells.matrix[r][c];
+      printOut += selectedCell ? "🟪" : "⬜️";
+    }
+    printOut += "\n"
+  }
+  console.log(printOut);
+}
+
+function printFrames() {
+  console.log("frames");
+  var printOut = "";
+  for (let f = 0; f < frames.length; f++) {
+    let frame = frames[f].matrix;
+    for (r = 0; r < rows; r++) {
+      for (c = 0; c < columns; c++) {
+        let value = frame[r][c];
+        printOut += value ? "🟪" : "⬜️";
+      }
+      printOut += "\n";
+    }
+    printOut += "\n";
+  }
+  console.log(printOut);
+
+}
+
+/*  END CONSOLE FRAME PRINT (DEBUG) */
+
+
+/*
+  The following functions export frames content into
+  different kind of structures
+*/
+
+/*  USED FOR OUR 12x8 matrix  */
+function exportSingleFrame(){
+  var bitmapName;
+  bitmapName = promptForName("Choose a name for your bitmap. Do NOT use spaces:", defaultBitmapName);
+  if(bitmapName === null){
+    return;
+  }
+  var printOut = "";
+  printOut += "const uint32_t " + bitmapName + "[] = {";
+  let binaryString = "";
+  for (r = 0; r < rows; r++) {
+    for (c = 0; c < columns; c++) {
+      let value = frames[currentFrame].matrix[r][c];
+      binaryString += value;
+    }
+  }
+  let uint32String = "";
+  let uint32Array = new Array();
+  for (let c = 0; c < binaryString.length; c++) {
+    uint32String += (binaryString[c]);
+    if ((c + 1) % 32 == 0) {
+      uint32String = "0x" + parseInt(uint32String, 2).toString(16)
+      printOut += "\n\t" + uint32String;
+
+      if (c + 1 == binaryString.length) {
+        printOut += "\n";
+      } else {
+        printOut += ",";
+      }
+
+      uint32Array.push(uint32String);
+      uint32String = "";
+    }
+  }
+  printOut += "};"
+  console.log(printOut);
+  const blob = new Blob([printOut], { type: "text/plain" });
+  const downloadLink = document.createElement("a");
+  downloadLink.href = URL.createObjectURL(blob);
+  downloadLink.download = bitmapName + ".h";
+  document.body.appendChild(downloadLink);
+  downloadLink.click();
+  document.body.removeChild(downloadLink);
+}
+
+function exportUint32() {
+  var sequenceName;
+  sequenceName = promptForName("Choose a name for your animation. Do NOT use spaces:", defaultFramesetName);
+  if(sequenceName === null) {
+    return;
+  }
+  var printOut = "";
+  printOut += "const uint32_t " + sequenceName + "[][4] = {" + "\n";
+  for (let f = 0; f < frames.length; f++) {
+    printOut += "\t{";
+    let frame = frames[f];
+    if (frame.duration == undefined) frame.duration = DEFAULT_FRAME_DURATION;
+    let binaryString = "";
+    for (r = 0; r < rows; r++) {
+      for (c = 0; c < columns; c++) {
+        let value = frame.matrix[r][c];
+        binaryString += value;
+      }
+    }
+    
+    // split binary string into uint32_t chunks
+    let uint32String = "";
+    let uint32Array = new Array();
+    for (let c = 0; c < binaryString.length; c++) {
+      uint32String += (binaryString[c]);
+      if ((c + 1) % 32 == 0) {
+        uint32String = "0x" + parseInt(uint32String, 2).toString(16)
+        printOut += "\n\t\t" + uint32String;
+
+        if (c + 1 == binaryString.length) {
+          printOut += ",\n";
+          printOut += `\t\t${frame.duration}`;
+          printOut += "\n\t}";
+          if (f != frames.length - 1) {
+            printOut += ",";
+          }
+          printOut += "\n";
+        } else {
+          printOut += ",";
+        }
+
+        uint32Array.push(uint32String);
+        uint32String = "";
+      }
+    }
+  }
+
+  printOut += "};"
+  
+  /*
+    Create download blob and link,
+    trigger download and then remove it
+  */
+  const blob = new Blob([printOut], { type: "text/plain" });
+  const downloadLink = document.createElement("a");
+  downloadLink.href = URL.createObjectURL(blob);
+  downloadLink.download = sequenceName + ".h";
+  document.body.appendChild(downloadLink);
+  downloadLink.click();
+  document.body.removeChild(downloadLink);
+
+}
+
+
+
+/*
+  TEMPORARILY UNUSED AND BUGGY
+  DO NOT TOUCH
+*/
+function exportFrames() {
+  var printOut = "";
+  printOut += "const uint16_t " + defaultFramesetName + "[][8] = {" + "\n";
+  for (let f = 0; f < frames.length; f++) {
+    let frame = frames[f];
+    printOut += "\t{\n"
+    for (r = 0; r < rows; r++) {
+
+      let uint16_t_value = "";
+      for (c = 0; c < columns; c++) {
+        let value = frame.matrix[r][c];
+        uint16_t_value += value;
+      }
+      uint16_t_value = "\t\t0x" + parseInt(uint16_t_value, 2).toString(16);
+      printOut += uint16_t_value;
+      if (r < rows - 1) {
+        printOut += ",\n";
+      } else {
+        printOut += "\n"
+
+      }
+    }
+    printOut += "\t}"
+    printOut += ""
+    if (f < frames.length - 1) {
+      printOut += ",\n";
+    } else {
+      printOut += "\n"
+    }
+  }
+  printOut += "}"
+
+  /*
+    Create download blob and link,
+    trigger download and then remove it
+  */
+  const blob = new Blob([printOut], { type: "text/plain" });
+  const downloadLink = document.createElement("a");
+  downloadLink.href = URL.createObjectURL(blob);
+  downloadLink.download = "animationFrames.h";
+  document.body.appendChild(downloadLink);
+  downloadLink.click();
+  document.body.removeChild(downloadLink);
+}
+
+/*
+  Project load/save
+*/
+function loadProject() {
+
+  const fileUpload = document.createElement("input");
+  fileUpload.type = "file"
+  fileUpload.id = "file-input";
+  fileUpload.addEventListener("change", function () {
+    console.log("file uploaded");
+    const fileReference = fileUpload.files[0];
+    const fReader = new FileReader();
+    fReader.onload = function (event) {
+      var fileContent = event.target.result;
+      deleteAllFrames()
+      frames = JSON.parse(fileContent);
+      createFramesPreviews();
+      goToFrame(0);
+      console.log(fileContent); // do something with the file content
+    };
+    fReader.readAsText(fileReference);
+  });
+  
+  /*
+    Create upload link,
+    trigger upload and remove it
+  */
+  document.body.appendChild(fileUpload);
+  fileUpload.click();
+  document.body.removeChild(fileUpload);
+}
+
+function saveProject() {
+  /*
+    Create download blob and link,
+    trigger download and then remove it
+  */
+  const blob = new Blob([JSON.stringify(frames)], { type: "text/plain" });
+  const downloadLink = document.createElement("a");
+  downloadLink.href = URL.createObjectURL(blob);
+
+  const now = new Date()
+  var year = now.getFullYear();
+  var month = now.getMonth() + 1;
+  var day = now.getDate();
+  var hours = now.getHours();
+  var minutes = now.getMinutes();
+  var seconds = now.getSeconds();
+  const datetimeFileName = "" + year + month + day + hours + minutes + seconds;
+
+  var fileName;
+  fileName = promptForName("Please enter a file name:", "MatrixProject_" + datetimeFileName);
+  
+  if (fileName === null) {
+    document.body.removeChild(downloadLink);
+    return;
+  }
+
+  downloadLink.download = fileName + ".mpj";
+  document.body.appendChild(downloadLink);
+  downloadLink.click();
+  document.body.removeChild(downloadLink);
+}
+
+function shiftMatrix(_direction, _wrap = false) {
+  console.log("shift matrix", _direction);
+  console.log(currentState);
+  var wrapEnabled;
+  if (keyIsDown(ALT)) {
+    wrapEnabled = true;
+  } else {
+    wrapEnabled = false;
+  }
+  
+  if (currentState == appState.SELECTING) {
+    selectedCells.matrix = offsetArray(selectedCells.matrix, _direction, wrapEnabled)
+  } else {
+    tempFrame = offsetArray(baseFrame.matrix, _direction, wrapEnabled);
+  }
+
+  /*
+    TODO:
+    move the content of selectedCells and use it to replace the content of frameBuffer
+    keeping in mind that the selection will be overlayed until it
+      - dropped
+      - canceled
+  */
+
+  if(currentState != appState.SELECTING){
+    console.log("shift matrix not SELECTING");
+    for (let r = 0; r < rows; r++) {
+      for (c = 0; c < columns; c++) {
+        let cell = frameBuffer[r][c];
+        cell.setState(tempFrame[r][c]);
+      }
+    }
+    commitFrame(currentFrame);
+  }
+}
+
+function playBack(_startFrame = currentFrame, _loop = false) {
+  clearTimeout(playbackInterval);
+  if(currentState == appState.PLAYING){
+    changeState(stateBeforePlayback);
+  }else{
+    changeState(appState.PLAYING);
+
+    
+    loopAnimation = _loop;
+    goToFrame(_startFrame);
+    playNextFrame();
+  }
+}
+
+function playNextFrame() {
+  playbackInterval = setTimeout(() => {
+    if (currentFrame < frames.length - 1) {
+      currentFrame++;
+      goToFrame(currentFrame);
+      playNextFrame();
+    } else {
+      currentFrame = 0;
+      goToFrame(currentFrame);
+      if(loopAnimation){
+        playNextFrame();
+      }else{
+        currentState = stateBeforePlayback;
+      }
+    }
+  }, currentFrameDuration);
+}
+
+function goToFrame(_frame) {
+  currentFrame = _frame;
+  if (currentFrame >= frames.length) currentFrame = frames.length -1;
+  if (currentFrame < 0) currentFrame = 0;
+  console.log("going to frame ", currentFrame);
+  
+  fillFrameBuffer()
+  currentFrameDuration = frames[currentFrame].duration;
+  commitFrame(currentFrame);
+  document.getElementsByClassName('frame-preview-container selected').forEach((p) => p.setAttribute('class', 'frame-preview-container'));
+  const previewFrameID = previewsList[currentFrame];
+  const selected = document.getElementById(previewFrameID);
+  selected.parentElement.setAttribute('class', 'frame-preview-container selected');
+}
+
+function undo() {
+  console.log('undo to be implemented')
+}
+
+function redo() {
+  console.log('undo to be implemented')
+}
+
+document.addEventListener('dragover', (e) => {
+  e.stopPropagation();
+  e.preventDefault();
+});
+
+/*
+  NOTE TO FUTURE SELF:
+  WHILE WRITING SOME OF THIS CODE I INTRODUCED A SERIES
+  OF ANNOYING BUGS WHILE PARSING PASTED PNG DATA TO BE USED AS PIXELS.
+  A MAIN THING I LEARNED WAS THAT I LEARNED HOW NOT TO CREATE NEW ARRAYS IN JS.
+  THE CREATION OF EMPTY BI-DIMENSIONAL ARRAYS THAT USED `fill()` TO
+  INITIALIZE ROWS OF DATA: WRONG.
+  DAVE SIMPSON HELPED ME FIND THE BUG AND FIX IT :)
+  (https://github.com/davegarthsimpson)
+*/
+function offsetArray(array, direction, wrap) {
+  const numRows = array.length;
+  const numCols = array[0].length;
+
+  // Determine the amount of cellOffset based on the direction
+  let rowOffset = 0;
+  let colOffset = 0;
+  if (direction === directions.UP) {
+    rowOffset = -1;
+  } else if (direction === directions.DOWN) {
+    rowOffset = 1;
+  } else if (direction === directions.LEFT) {
+    colOffset = -1;
+  } else if (direction === directions.RIGHT) {
+    colOffset = 1;
+  }
+
+  // Create a new array with the same dimensions as the original array, and initialize each element to 0
+  const result = Array.from({ length: numRows }, () => Array(numCols).fill(0));
+
+  // Loop through each cell in the original array and copy it to the new array with the cellOffset
+  for (let i = 0; i < numRows; i++) {
+    for (let j = 0; j < numCols; j++) {
+      let newRow = i + rowOffset;
+      let newCol = j + colOffset;
+
+      // Handle wrapping if enabled
+      if (wrap) {
+        if (newRow < 0) newRow = numRows - 1;
+        if (newRow >= numRows) newRow = 0;
+        if (newCol < 0) newCol = numCols - 1;
+        if (newCol >= numCols) newCol = 0;
+      } else {
+        if (newRow < 0 || newRow >= numRows || newCol < 0 || newCol >= numCols) {
+          // If wrapping is disabled and the cellOffset goes out of bounds, copy 0 to the new array instead of throwing an error
+          continue;
+        }
+      }
+
+      // Copy the value from the original array to the new array with the cellOffset
+      result[newRow][newCol] = array[i][j];
+    }
+  }
+  return result;
+}
+
+
+function promptForName(description, defaultString){
+  var nameString;
+  if(isElectron){
+    nameString = defaultString;
+  }else{
+    nameString = prompt(description, defaultString);
+  }
+  return nameString;
+}
+
+function disableButtons() {
+  const deleteButton = document.getElementById('delete-button');
+  const play = document.getElementById('play');
+  if (frames.length === 1) {
+    deleteButton.setAttribute('disabled', true);
+    play.setAttribute('disabled', true);
+  } else {
+    deleteButton.removeAttribute('disabled');
+    play.removeAttribute('disabled');
+  }
+}
+
+// LIVE VIEW DIALOGS 
+function showLiveTestDialog(show) {
+  const display = show ? "block" : "none"
+  const testLiveModal = document.getElementById("test-live-modal");
+  testLiveModal.style.display = display;
+}
+
+function deviceConnectedDialog(show, port = false) {
+  const display = show ? "block" : "none"
+  const deviceConnectedModal = document.getElementById("device-connected-modal");
+  deviceConnectedModal.style.display = display;
+
+  if(!show && port) openPort()
+}
+
+function liveTestDialogGo(){
+  showLiveTestDialog(false)
+  deviceConnectedDialog(true)
+}
+
+function deviceConnectedBack(){
+  deviceConnectedDialog(false)
+  showLiveTestDialog(true)
+}
+

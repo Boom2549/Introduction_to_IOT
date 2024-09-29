@@ -1,0 +1,55 @@
+function UIButton(_x, _y, _w, _h, _iconFile, _buttonStyle, _selected = false){
+  
+  this.x = _x;
+  this.y = _y;
+  this.width = _w;
+  this.height = _h;
+  this.iconFile = _iconFile;
+  this.icon = null;
+  this.selected = _selected;
+  this.buttonStyle = _buttonStyle;
+
+  console.log(_iconFile);
+  
+  this.update = function(){
+
+  }
+  this.select = function(_selected = true){
+    this.selected = _selected;
+  }
+  /*
+  var buttonsStyle = {
+    "unselected": {
+      "border": "#ff0000",
+      "background": "#dddddd",
+      "icon": "#ffffff"
+    },
+    "selected": {
+      "border": "#0000ff",
+      "background": "#999999",
+      "icon": "#ffffff"
+    }
+  };
+  */
+
+  this.loadIcon = function(_iconFile){
+    this.icon = loadImage(_iconFile);
+  }
+  this.draw = function(){
+    stroke(255, 0, 255);
+    strokeWeight(0);
+    let buttonBorderColor = this.selected ? color(this.buttonStyle.selected.border) : this.buttonStyle.unselected.border;
+    fill(buttonBorderColor);
+    rect(this.x, this.y, this.width, this.height, this.height / 5);
+    let buttonBackgroundColor = this.selected ? color(this.buttonStyle.selected.background) : this.buttonStyle.unselected.background;
+    fill(buttonBackgroundColor)
+    rect(this.x + 2, this.y + 2, this.width - 4, this.height - 4, this.height / 6)
+    let x = this.x + (this.width / 2 - this.icon.width / 2);
+    let y = this.y + (this.height / 2 - this.icon.height / 2);
+    let buttonIconColor = this.selected ? color(this.buttonStyle.selected.icon) : this.buttonStyle.unselected.icon;
+    tint(buttonIconColor)
+    image(this.icon, x, y);
+    
+  }
+  this.loadIcon(_iconFile);
+}
